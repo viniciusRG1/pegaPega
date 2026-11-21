@@ -1,0 +1,10 @@
+﻿@"
+.venv1/
+__pycache__/
+*.pyc
+*.tmp
+checkpoints_curriculo/*
+!checkpoints_curriculo/checkpoint_recente.pt
+!checkpoints_curriculo/fase_*.pt
+"@ | Out-File -Encoding utf8 .gitignore
+*.exe

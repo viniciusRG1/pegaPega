@@ -1,0 +1,33 @@
+# Checkpoints e pesos de modelos
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Ambientes virtuais
+.venv/
+.venv1/
+venv/
+env/
+ENV/
+
+# Python e compilacao
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDEs (PyCharm, VSCode)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs e monitorizacao
+runs/
+wandb/
+*.log
+
+# Ficheiros do sistema
+Thumbs.db
+.DS_Store
