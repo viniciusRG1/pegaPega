@@ -6,6 +6,39 @@ from mae_envs.wrappers.util import update_obs_space
 from mae_envs.util.geometry import dist_pt_to_cuboid
 from copy import deepcopy
 from itertools import compress
+import os
+
+_SINAL_SOLDA = None
+
+
+def sinal_da_solda():
+    '''
+        Descobre, simulando dois corpos, em que sentido o MuJoCo instalado interpreta a
+        posicao relativa de uma solda (weld).
+
+        O codigo original (escrito para o MuJoCo 1.5) grava "agente - objeto". Nos MuJoCo
+        2.1+ a engine espera "objeto - agente": com o sinal antigo o objeto agarrado e
+        arremessado para o lado oposto do agente em vez de ficar preso onde esta.
+        Devolve +1 se a convencao antiga vale e -1 se o vetor precisa ser invertido.
+        A variavel de ambiente PEGAPEGA_SOLDA_ORIGINAL=1 forca o comportamento antigo.
+    '''
+    global _SINAL_SOLDA
+    if os.environ.get('PEGAPEGA_SOLDA_ORIGINAL') == '1':
+        return 1.0
+    if _SINAL_SOLDA is None:
+        from mujoco_py import load_model_from_xml, MjSim
+        corpo = ('<body name="%s" pos="%s 0 0"><joint type="slide" axis="1 0 0" damping="5"/>'
+                 '<geom size="0.1" mass="%s" contype="0" conaffinity="0"/></body>')
+        xml = ('<mujoco><option gravity="0 0 0"/><worldbody>' + corpo % ('a', 0, 1000) +
+               corpo % ('b', 1, 1) + '</worldbody><equality><weld body1="a" body2="b"/></equality></mujoco>')
+        sim = MjSim(load_model_from_xml(xml))
+        # Pede a solda "1 metro a frente do corpo a", que e onde o corpo b ja esta.
+        sim.model.eq_data[0, :] = np.array([-1., 0., 0., 1., 0., 0., 0.])
+        for _ in range(400):
+            sim.step()
+        # Se b ficou parado, a engine le o vetor como "a - b" (convencao antiga).
+        _SINAL_SOLDA = 1.0 if sim.data.qpos[1] > -0.5 else -1.0
+    return _SINAL_SOLDA
 
 
 class GrabObjWrapper(gym.Wrapper):
@@ -141,7 +174,7 @@ class GrabObjWrapper(gym.Wrapper):
             obj_pos = sim.data.body_xpos[self.obj_body_idxs[closest_obj[agent_idx]]]
             agent_pos = sim.data.body_xpos[self.agent_body_idxs[agent_idx]]
 
-            grab_vec = agent_pos - obj_pos
+            grab_vec = sinal_da_solda() * (agent_pos - obj_pos)
 
             if self.grab_dist is not None:
                 grab_vec = self.grab_dist / (1e-3 + np.linalg.norm(grab_vec)) * grab_vec

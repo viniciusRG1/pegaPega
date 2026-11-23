@@ -1,0 +1,14 @@
+# Testado com Python 3.10 (macOS Apple Silicon). Deve funcionar igual em Windows e Linux.
+numpy==1.26.4          # o gym 0.26 nao funciona com NumPy 2
+gym==0.26.2
+torch>=2.3
+mujoco>=3.1            # simulador oficial; substitui o mujoco_py pela camada em compat/
+glfw                   # janela do visualizador (tentar.py)
+xmltodict==0.12.0      # versoes novas devolvem dict comum e quebram o mujoco-worldgen
+scipy
+click
+numpy-stl
+pillow
+imageio
+imageio-ffmpeg         # gravacao dos videos em MP4
+matplotlib             # graficos do treino

@@ -1,10 +1,18 @@
-﻿@"
+# ambientes virtuais e caches
+.venv/
 .venv1/
 __pycache__/
 *.pyc
 *.tmp
+*.exe
+.idea/
+.DS_Store
+
+# checkpoints intermediarios (ficam so o mais recente e o fim de cada fase)
 checkpoints_curriculo/*
 !checkpoints_curriculo/checkpoint_recente.pt
 !checkpoints_curriculo/fase_*.pt
-"@ | Out-File -Encoding utf8 .gitignore
-*.exe
+checkpoints_final/ckpt_iter_*.pt
+
+# registros brutos do treino
+*.log
