@@ -117,7 +117,8 @@ def compute_gae(rew, val, done, next_v, next_done, gamma, lam):
     return adv, adv + val
 
 
-def train_ppo_tbptt_amp(agent, optimizer, scaler, mascara, b, cfg, ent_coef, usar_amp, device):
+def train_ppo_tbptt_amp(agent, optimizer, scaler, mascara, b, cfg, ent_coef, usar_amp, device, so_critico=False):
+    # so_critico: atualiza apenas a cabeca de valor (aquecimento apos trocar de fase ou de recompensa).
     T, N = b["logp"].shape
     L = cfg["seq_len"]
     n_chunks = T // L
@@ -164,6 +165,10 @@ def train_ppo_tbptt_amp(agent, optimizer, scaler, mascara, b, cfg, ent_coef, usa
 
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
+            if so_critico:
+                for nome, param in agent.named_parameters():
+                    if not nome.startswith("critic."):
+                        param.grad = None
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(agent.parameters(), 0.5)
             scaler.step(optimizer)
@@ -172,9 +177,21 @@ def train_ppo_tbptt_amp(agent, optimizer, scaler, mascara, b, cfg, ent_coef, usa
                 kl_epoca.append(((ratio - 1) - log_ratio).mean().item())
                 ents.append(entropy.mean().item())
         kls += kl_epoca
-        if cfg["target_kl"] and np.mean(kl_epoca) > cfg["target_kl"]:
+        if cfg["target_kl"] and np.mean(kl_epoca) > cfg["target_kl"] and not so_critico:
             break
     return float(np.mean(kls)), float(np.mean(ents))
+
+
+def alargar_entrada(pesos_rede, obs_dim):
+    """Adapta os pesos de uma rede treinada com menos entradas: as entradas novas (sempre
+    acrescentadas ao fim da observacao) comecam com peso zero, entao o comportamento nao muda."""
+    w = pesos_rede["fc.0.weight"]
+    if w.shape[1] == obs_dim:
+        return pesos_rede, False
+    assert w.shape[1] < obs_dim, "o checkpoint tem mais entradas que o ambiente"
+    novo = dict(pesos_rede)
+    novo["fc.0.weight"] = torch.cat([w, torch.zeros(w.shape[0], obs_dim - w.shape[1], dtype=w.dtype)], dim=1)
+    return novo, True
 
 
 # =============================================================================
@@ -183,7 +200,8 @@ def train_ppo_tbptt_amp(agent, optimizer, scaler, mascara, b, cfg, ent_coef, usa
 class Historico:
     """Acrescenta uma linha por iteracao em um CSV, para os graficos de treino."""
     COLUNAS = ("iteracao", "fase", "iters_fase", "rew_hider", "rew_seeker", "celulas", "celulas_h",
-               "celulas_s", "visto", "dentro", "portas", "abrigo", "jogo_h", "jogo_s", "segundos")
+               "celulas_s", "visto", "dentro", "portas", "abrigo", "jogo_h", "jogo_s", "vedadas", "selada",
+               "subiu", "invasao", "rampa_travada", "segundos")
 
     def __init__(self, caminho):
         self.caminho = caminho
@@ -250,6 +268,22 @@ def main():
                     help="para quando a ultima fase do curriculo completar N iteracoes")
     ap.add_argument("--frame-skip", type=int, default=None,
                     help="passos do simulador por decisao (padrao: o do checkpoint, senao %d)" % AMBIENTE["frame_skip"])
+    ap.add_argument("--horizonte", type=int, default=None,
+                    help="passos do simulador por episodio (padrao: o do checkpoint, senao %d)" % AMBIENTE["horizon"])
+    ap.add_argument("--obs-portas", action="store_true",
+                    help="acrescenta a observacao a posicao de agente e caixas relativa a cada porta")
+    ap.add_argument("--aquecer", type=int, default=0,
+                    help="nas primeiras N iteracoes desta execucao so a cabeca de valor e treinada")
+    ap.add_argument("--passos", type=int, default=None, help="decisoes coletadas por ambiente a cada iteracao")
+    ap.add_argument("--obs-rampa", action="store_true",
+                    help="acrescenta a observacao a posicao da rampa (sempre visivel) e se ela foi trancada")
+    ap.add_argument("--tam-caixa", type=float, default=None, help="lado da caixa em metros (padrao 0,5)")
+    ap.add_argument("--tam-porta", type=int, default=None,
+                    help="largura da porta em celulas da grade (padrao 2: vao de 0,7 m; 1: vao de 0,5 m)")
+    ap.add_argument("--lr", type=float, default=None, help="troca a taxa de aprendizado")
+    ap.add_argument("--ent", type=float, default=None, help="troca o coeficiente de entropia da fase")
+    ap.add_argument("--peso", action="append", default=[], metavar="TIME:COMPONENTE=VALOR",
+                    help="troca um peso de recompensa da fase, ex.: hider:trancar_longe=4 (pode repetir)")
     ap.add_argument("--threads", type=int, default=4, help="threads do PyTorch na CPU")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -260,6 +294,8 @@ def main():
         cfg["num_envs"] = args.envs
     if args.pasta:
         cfg["pasta"] = args.pasta
+    if args.passos:
+        cfg["steps_per_env"] = args.passos
     torch.set_num_threads(max(1, args.threads))
     num_envs, T, L = cfg["num_envs"], cfg["steps_per_env"], cfg["seq_len"]
     assert T % L == 0, "steps_per_env precisa ser multiplo de seq_len"
@@ -280,6 +316,16 @@ def main():
         cfg_amb.update(ck.get("ambiente", {}))
     if args.frame_skip:
         cfg_amb["frame_skip"] = args.frame_skip
+    if args.horizonte:
+        cfg_amb["horizon"] = args.horizonte
+    if args.obs_portas:
+        cfg_amb["obs_portas"] = True
+    if args.obs_rampa:
+        cfg_amb["obs_rampa"] = True
+    if args.tam_caixa:
+        cfg_amb["tam_caixa"] = args.tam_caixa
+    if args.tam_porta:
+        cfg_amb["tam_porta"] = args.tam_porta
     print(f"Ambiente: {cfg_amb} | MuJoCo: {preparar_ambiente.BACKEND_MUJOCO}")
 
     dummy = TwoTeamHideAndSeek(**cfg_amb, prep_fraction=CURRICULO[0]["prep_fraction"])
@@ -297,10 +343,21 @@ def main():
 
     if ck is not None:
         try:
-            assert ck["obs_dim"] == obs_dim and list(ck["nvec"]) == list(nvec)
+            assert list(ck["nvec"]) == list(nvec)
             for t in TIMES:
-                agentes[t].load_state_dict(ck["agentes"][t])
-                opts[t].load_state_dict(ck["opts"][t])
+                pesos_rede, alargada = alargar_entrada(ck["agentes"][t], obs_dim)
+                agentes[t].load_state_dict(pesos_rede)
+                if alargada:
+                    print(f"Rede do time {t}: entrada alargada de {ck['agentes'][t]['fc.0.weight'].shape[1]} "
+                          f"para {obs_dim}; otimizador reiniciado.")
+                else:
+                    try:
+                        formas = [tuple(v["exp_avg"].shape) for v in ck["opts"][t]["state"].values() if "exp_avg" in v]
+                        assert formas == [tuple(p.shape) for p in agentes[t].parameters()][:len(formas)]
+                        opts[t].load_state_dict(ck["opts"][t])
+                    except Exception:
+                        print(f"Otimizador do time {t} incompativel; reiniciado.")
+                        opts[t] = optim.Adam(agentes[t].parameters(), lr=cfg["lr"], eps=1e-5)
                 scalers[t].load_state_dict(ck["scalers"][t])
                 norm_rew[t].load_state_dict(ck["norm_rew"][t])
             estado = ck["estado"]
@@ -313,10 +370,15 @@ def main():
         estado.update(fase=min(max(args.fase, 1), len(CURRICULO)) - 1, iters_fase=0, metricas={})
         norm_rew = {t: RunningMeanStd() for t in TIMES}
         print(f"Fase forcada: {CURRICULO[estado['fase']]['nome']}")
+    if args.lr:
+        for t in TIMES:
+            for g in opts[t].param_groups:
+                g["lr"] = args.lr
 
     i_fase = estado["fase"]
     envs = ParallelEnvs(num_envs, cfg_amb, CURRICULO[i_fase]["prep_fraction"],
-                        CURRICULO[i_fase].get("sala_fechada", False))
+                        CURRICULO[i_fase].get("sala_fechada", False), CURRICULO[i_fase].get("horizonte"),
+                        CURRICULO[i_fase].get("defesa_rampa", False))
     print(f"===== FASE {CURRICULO[i_fase]['nome']} =====")
     historico = Historico(os.path.join(cfg["pasta"], "historico.csv"))
     iter_inicial = estado["iteracao"]
@@ -335,7 +397,8 @@ def main():
             t0 = time.time()
             if estado["fase"] != i_fase:
                 i_fase = estado["fase"]
-                obs = envs.configurar(CURRICULO[i_fase]["prep_fraction"], CURRICULO[i_fase].get("sala_fechada", False))
+                obs = envs.configurar(CURRICULO[i_fase]["prep_fraction"], CURRICULO[i_fase].get("sala_fechada", False),
+                                      CURRICULO[i_fase].get("horizonte"), CURRICULO[i_fase].get("defesa_rampa", False))
                 dones = np.ones(num_envs, dtype=np.float32)
                 lstm = novos_estados_lstm()
                 norm_rew = {t: RunningMeanStd() for t in TIMES}
@@ -345,6 +408,10 @@ def main():
             mascaras = {t: mascara_acoes(nvec, grupos, neutro, fase["acoes"][t]).to(device) for t in TIMES}
             pesos = {t: np.array([fase["pesos"].get(t, {}).get(c, 0.0) for c in COMPONENTES], np.float32)
                      for t in TIMES}
+            for troca_peso in args.peso:
+                alvo, valor = troca_peso.split("=")
+                t, c = alvo.split(":")
+                pesos[t][COMPONENTES.index(c)] = float(valor)
 
             buf = {}
             for t in TIMES:
@@ -400,7 +467,9 @@ def main():
                       dict(obs=B["obs"], act=B["act"], logp=B["logp"], adv=adv, ret=ret, val=B["val"],
                            done=B["done"], h=B["h"], c=B["c"]).items()}
                 kl, ent = train_ppo_tbptt_amp(agentes[t], opts[t], scalers[t], mascaras[t], bt, cfg,
-                                              fase.get("ent_coef", 0.01), usar_amp, device)
+                                              args.ent if args.ent is not None else fase.get("ent_coef", 0.01),
+                                              usar_amp, device,
+                                              so_critico=estado["iteracao"] - iter_inicial < args.aquecer)
                 kl_txt.append(f"{t[0].upper()} kl {kl:.3f} ent {ent:.2f}")
 
             if episodios:
@@ -416,7 +485,8 @@ def main():
             print(f"Iter {estado['iteracao']} | {fase['nome']} {estado['iters_fase']}/{max_it} | "
                   f"rH {r_medio['hider']:+.2f} rS {r_medio['seeker']:+.2f} | cel {m.get('celulas', 0):.1f} "
                   f"visto {m.get('visto', 0):.2f} dentro {m.get('dentro', 0):.2f} portas {m.get('portas', 0):.2f} "
-                  f"abrigo {m.get('abrigo', 0):.2f} | "
+                  f"abrigo {m.get('abrigo', 0):.2f} ved {m.get('vedadas', 0):.2f} sel {m.get('selada', 0):.2f} "
+                  f"sub {m.get('subiu', 0):.2f} inv {m.get('invasao', 0):.2f} trav {m.get('rampa_travada', 0):.2f} | "
                   f"{' | '.join(kl_txt)} | {time.time() - t0:.1f}s")
 
             historico.registrar(estado, fase["nome"], r_medio, time.time() - t0)

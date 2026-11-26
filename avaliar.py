@@ -13,14 +13,15 @@ import os
 import numpy as np
 import torch
 
-from treinamento import (AMBIENTE, CURRICULO, HIDDEN, TIMES, ActorCriticLSTM, TwoTeamHideAndSeek,
+from treinamento import (AMBIENTE, CURRICULO, HIDDEN, TIMES, ActorCriticLSTM, ambiente_da_fase,
                          fase_do_checkpoint, mascara_acoes)
 
-# Modelo de demonstracao do trabalho: fim da fase 4b_invadir, em que barricada e rampa aparecem juntas.
-# O fim do curriculo (jogo livre) fica em checkpoints_final/checkpoint_recente.pt.
-MODELO_DEMO = "./checkpoints_final/fase_4b_invadir.pt"
+# Modelo de demonstracao do trabalho: ultima etapa da segunda rodada (escondedores que travam a rampa
+# e vedam a sala contra pegadores que sabem usar a rampa). As etapas anteriores estao na mesma pasta.
+MODELO_DEMO = "./checkpoints_rodada2/etapa_c_defesa.pt"
 
-METRICAS = ("visto", "nunca_visto", "portas", "duas_portas", "abrigo", "dentro", "subiu", "invasao",
+METRICAS = ("visto", "nunca_visto", "portas", "duas_portas", "abrigo", "vedadas", "selada", "rampa_travada",
+            "dentro", "subiu", "invasao",
             "celulas_h", "celulas_s",
             "jogo_h", "jogo_s")
 DESCRICAO = {
@@ -29,9 +30,12 @@ DESCRICAO = {
     "portas": "portas bloqueadas por caixa trancada quando a preparacao termina (0 a 2)",
     "duas_portas": "fracao dos episodios com as duas portas bloqueadas ao fim da preparacao",
     "abrigo": "portas bloqueadas com os dois escondedores dentro da sala, ao fim da preparacao (0 a 2)",
+    "vedadas": "portas vedadas de verdade (caixa trancada e centrada no vao) ao fim da preparacao (0 a 2)",
+    "selada": "fracao dos episodios com as duas portas vedadas e os dois escondedores dentro, ao fim da preparacao",
+    "rampa_travada": "fracao dos episodios com a rampa trancada pelos escondedores fora de uso, ao fim da preparacao",
     "dentro": "fracao do tempo em que algum pegador esta dentro da sala",
     "subiu": "fracao dos episodios em que um pegador chegou ao alto da rampa (0,5 m)",
-    "invasao": "fracao dos episodios em que um pegador entrou na sala com as duas portas fechadas",
+    "invasao": "fracao dos episodios em que um pegador entrou na sala com as duas portas vedadas",
     "celulas_h": "celulas diferentes visitadas por escondedor",
     "celulas_s": "celulas diferentes visitadas por pegador",
     "jogo_h": "recompensa do jogo somada no episodio (escondedores)",
@@ -43,7 +47,8 @@ def carregar_agentes(caminho, device):
     ck = torch.load(caminho, map_location=device, weights_only=False)
     agentes = {}
     for t in TIMES:
-        rede = ActorCriticLSTM(ck["obs_dim"], ck["nvec"], hidden=HIDDEN).to(device)
+        entradas = ck["agentes"][t]["fc.0.weight"].shape[1]
+        rede = ActorCriticLSTM(entradas, ck["nvec"], hidden=HIDDEN).to(device)
         rede.load_state_dict(ck["agentes"][t])
         rede.eval()
         agentes[t] = rede
@@ -80,14 +85,15 @@ def jogar_episodio(env, agentes, mascaras, device, deterministico=False, ao_pass
     return info
 
 
-def avaliar(caminho, episodios=200, fase=None, deterministico=False, semente=0, device=None):
+def avaliar(caminho, episodios=200, fase=None, deterministico=False, semente=0, device=None, horizonte=None):
     device = device or torch.device("cpu")
     agentes, estado, cfg_amb = carregar_agentes(caminho, device)
     f = CURRICULO[indice_fase(estado, fase)]
+    if horizonte:
+        cfg_amb, f = dict(cfg_amb, horizon=horizonte), dict(f, horizonte=None)
     np.random.seed(semente)
     torch.manual_seed(semente)
-    env = TwoTeamHideAndSeek(**cfg_amb, prep_fraction=f["prep_fraction"],
-                             sala_fechada=f.get("sala_fechada", False))
+    env = ambiente_da_fase(cfg_amb, f)
     mascaras = {t: mascara_acoes(env.nvec, env.grupos, env.neutro, f["acoes"][t]).to(device) for t in TIMES}
     resumos = []
     try:
@@ -100,14 +106,16 @@ def avaliar(caminho, episodios=200, fase=None, deterministico=False, semente=0, 
         env.close()
     saida = {k: float(np.mean([r[k] for r in resumos])) for k in METRICAS}
     saida["erro_padrao"] = {k: float(np.std([r[k] for r in resumos]) / np.sqrt(len(resumos))) for k in METRICAS}
-    saida.update(checkpoint=caminho, iteracao=estado.get("iteracao", 0), fase=f["nome"], episodios=episodios)
+    saida.update(checkpoint=caminho, iteracao=estado.get("iteracao", 0), fase=f["nome"], episodios=episodios,
+                 horizonte=env.horizon)
     return saida
 
 
 def imprimir(r):
-    print(f"\n{r['checkpoint']}  (iteracao {r['iteracao']}, regras da fase {r['fase']}, {r['episodios']} episodios)")
+    print(f"\n{r['checkpoint']}  (iteracao {r['iteracao']}, regras da fase {r['fase']}, "
+          f"{r['horizonte']} passos por episodio, {r['episodios']} episodios)")
     for k in METRICAS:
-        print(f"  {k:11s} {r[k]:+8.3f} +- {r['erro_padrao'][k]:.3f}   {DESCRICAO[k]}")
+        print(f"  {k:13s} {r[k]:+8.3f} +- {r['erro_padrao'][k]:.3f}   {DESCRICAO[k]}")
 
 
 def main():
@@ -118,6 +126,7 @@ def main():
     ap.add_argument("--fase", type=int, default=None, help="usa as regras desta fase (1..%d)" % len(CURRICULO))
     ap.add_argument("--det", action="store_true", help="acao mais provavel em vez de amostrar")
     ap.add_argument("--semente", type=int, default=0)
+    ap.add_argument("--horizonte", type=int, default=None, help="passos do simulador por episodio")
     ap.add_argument("--json", default=None, help="grava os resultados neste arquivo")
     args = ap.parse_args()
 
@@ -126,7 +135,7 @@ def main():
         caminhos = sorted(glob.glob(os.path.join(os.path.dirname(args.ckpt), "*.pt")))
     resultados = []
     for c in caminhos:
-        r = avaliar(c, args.episodios, args.fase, args.det, args.semente)
+        r = avaliar(c, args.episodios, args.fase, args.det, args.semente, horizonte=args.horizonte)
         imprimir(r)
         resultados.append(r)
     if args.json:

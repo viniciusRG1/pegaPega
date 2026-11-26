@@ -14,5 +14,9 @@ checkpoints_curriculo/*
 !checkpoints_curriculo/fase_*.pt
 checkpoints_final/ckpt_iter_*.pt
 
+# pastas de trabalho da segunda rodada (o que importa foi copiado para checkpoints_rodada2/)
+/rodada2/
+
 # registros brutos do treino
 *.log
+/rodada3/

@@ -70,12 +70,81 @@ def desenhar(linhas, saida, titulo):
     plt.close(fig)
 
 
+# Segunda rodada: cada etapa foi treinada em uma pasta, com seu proprio historico.
+#   (titulo, [pastas em sequencia], [(coluna, rotulo, cor)])
+ETAPAS_RODADA2 = (
+    ("Oficina de vedacao (escondedores): sala vedada com os dois dentro", ("h4", "h5"),
+     (("selada", "sala vedada", "#4a3aa7"),)),
+    ("Pegadores no jogo contra a sala vedada", ("s2",),
+     (("subiu", "sobe a rampa", "#eda02c"), ("invasao", "entra na sala vedada", "#e34948"),
+      ("visto", "escondedor a vista", "#888888"))),
+    ("Oficina de defesa (escondedores): travar a rampa e vedar a sala", ("d3", "d4"),
+     (("rampa_travada", "rampa travada", "#1baf7b"), ("selada", "sala vedada", "#4a3aa7"))),
+    ("Escondedores no jogo contra pegadores que ja conhecem a defesa", ("g1",),
+     (("visto", "escondedor a vista", "#888888"), ("selada", "sala vedada a tempo", "#4a3aa7"),
+      ("rampa_travada", "rampa travada", "#1baf7b"))),
+)
+
+
+def media_movel(v, n=40):
+    out, soma, fila = [], 0.0, []
+    for x in v:
+        if x == x:
+            fila.append(x)
+            soma += x
+            if len(fila) > n:
+                soma -= fila.pop(0)
+        out.append(soma / len(fila) if fila else float("nan"))
+    return out
+
+
+def desenhar_rodada2(pasta, saida):
+    fig, eixos = plt.subplots(len(ETAPAS_RODADA2), 1, figsize=(11, 2.7 * len(ETAPAS_RODADA2)))
+    for eixo, (titulo, pastas, series) in zip(eixos, ETAPAS_RODADA2):
+        linhas, cortes = [], []
+        for sub in pastas:
+            caminho = os.path.join(pasta, sub, "historico.csv")
+            if not os.path.exists(caminho):
+                continue
+            with open(caminho, encoding="utf-8") as f:
+                novas = list(csv.DictReader(f))
+            if linhas:
+                cortes.append(len(linhas))
+            linhas += novas
+        x = list(range(1, len(linhas) + 1))
+        for coluna, rotulo, cor in series:
+            v = [float(l[coluna]) if l.get(coluna) not in ("", None, "nan") else float("nan") for l in linhas]
+            eixo.plot(x, media_movel(v), color=cor, linewidth=1.8, label=rotulo)
+        for c in cortes:
+            eixo.axvline(c, color="#999999", linewidth=0.8, linestyle="--")
+        eixo.set_ylim(0, 1)
+        eixo.set_title(titulo, loc="left", fontsize=11)
+        eixo.grid(axis="y", color="#d9d9d6", linewidth=0.6)
+        eixo.legend(loc="center right", fontsize=9, frameon=False)
+        for lado in ("top", "right"):
+            eixo.spines[lado].set_visible(False)
+        eixo.set_xlabel("iteracao de treino dentro da etapa")
+    fig.suptitle("Segunda rodada: fracao dos episodios (ou do tempo) ao longo do treino, media movel de 40 iteracoes",
+                 x=0.01, ha="left", fontsize=12, y=0.997)
+    fig.tight_layout(rect=(0, 0, 1, 0.985))
+    os.makedirs(os.path.dirname(os.path.abspath(saida)), exist_ok=True)
+    fig.savefig(saida, dpi=140)
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--rodada2", default=None, metavar="PASTA",
+                    help="desenha as etapas da segunda rodada a partir das subpastas com historico.csv")
     ap.add_argument("--csv", default="./checkpoints_final/historico.csv")
     ap.add_argument("--saida", default="./resultados/treino.png")
     ap.add_argument("--titulo", default="Curriculo do pega-pega: metricas ao longo do treino (media movel)")
     args = ap.parse_args()
+    if args.rodada2:
+        saida = args.saida if args.saida != ap.get_default("saida") else "./resultados/treino_rodada2.png"
+        desenhar_rodada2(args.rodada2, saida)
+        print(saida)
+        return
     linhas = ler(args.csv)
     desenhar(linhas, args.saida, args.titulo)
     print(f"{args.saida}: {len(linhas)} iteracoes, fases {[t[0] for t in trechos_de_fase(linhas)]}")

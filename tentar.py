@@ -15,25 +15,27 @@ import numpy as np
 import torch
 
 from avaliar import MODELO_DEMO, carregar_agentes, indice_fase, jogar_episodio
-from treinamento import CURRICULO, TIMES, TwoTeamHideAndSeek, mascara_acoes
+from treinamento import CURRICULO, TIMES, ambiente_da_fase, mascara_acoes
 
 
-def rodar_visualizacao(caminho, episodios, pausa, fase_forcada, deterministico):
+def rodar_visualizacao(caminho, episodios, pausa, fase_forcada, deterministico, horizonte=None):
     device = torch.device("cpu")
     agentes, estado, cfg_amb = carregar_agentes(caminho, device)
     fase = CURRICULO[indice_fase(estado, fase_forcada)]
     print(f"Checkpoint: {caminho}")
     print(f"Iteracao salva: {estado.get('iteracao', 0)} | Regras da fase: {fase['nome']}")
 
-    env = TwoTeamHideAndSeek(**cfg_amb, prep_fraction=fase["prep_fraction"],
-                             sala_fechada=fase.get("sala_fechada", False))
+    if horizonte:
+        cfg_amb, fase = dict(cfg_amb, horizon=horizonte), dict(fase, horizonte=None)
+    env = ambiente_da_fase(cfg_amb, fase)
     env.renderizar = True
     env.pausa_render = pausa
     mascaras = {t: mascara_acoes(env.nvec, env.grupos, env.neutro, fase["acoes"][t]).to(device) for t in TIMES}
     try:
         for ep in range(1, episodios + 1):
             info = jogar_episodio(env, agentes, mascaras, device, deterministico)
-            print(f"Ep {ep}/{episodios} | Portas bloqueadas: {info['portas']:.0f} | "
+            print(f"Ep {ep}/{episodios} | Portas vedadas: {info['vedadas']:.0f} | "
+                  f"Rampa travada: {'sim' if info['rampa_travada'] else 'nao'} | "
                   f"A vista: {100 * info['visto']:.0f}% | rH: {info['jogo_h']:+.1f} | rS: {info['jogo_s']:+.1f}")
             time.sleep(0.3)
     except KeyboardInterrupt:
@@ -48,10 +50,11 @@ if __name__ == "__main__":
     ap.add_argument("--episodios", type=int, default=10)
     ap.add_argument("--pausa", type=float, default=0.03, help="segundos entre quadros")
     ap.add_argument("--fase", type=int, default=None, help="usa as regras desta fase (1..%d)" % len(CURRICULO))
+    ap.add_argument("--horizonte", type=int, default=None, help="passos do simulador por episodio")
     ap.add_argument("--det", action="store_true", help="acao mais provavel em vez de amostrar")
     ap.add_argument("--semente", type=int, default=None)
     args = ap.parse_args()
     if args.semente is not None:
         np.random.seed(args.semente)
         torch.manual_seed(args.semente)
-    rodar_visualizacao(args.ckpt, args.episodios, args.pausa, args.fase, args.det)
+    rodar_visualizacao(args.ckpt, args.episodios, args.pausa, args.fase, args.det, args.horizonte)

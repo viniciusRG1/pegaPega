@@ -19,11 +19,12 @@ from mae_envs.envs.hide_and_seek import make_env  # noqa: E402
 # =============================================================================
 # CONFIGURACAO
 # =============================================================================
-AMBIENTE = dict(n_hiders=2, n_seekers=2, n_boxes=2, n_ramps=1, frame_skip=4, horizon=120)
+AMBIENTE = dict(n_hiders=2, n_seekers=2, n_boxes=2, n_ramps=1, frame_skip=4, horizon=120, obs_portas=False,
+                obs_rampa=False, tam_caixa=0.5, tam_porta=2)
 
 TREINO = dict(
     num_envs=12, steps_per_env=120, seq_len=20, num_minibatches=4, update_epochs=6,
-    num_iterations=20000, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2,
+    num_iterations=1000000, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2,
     vf_coef=0.5, target_kl=0.03, salvar_cada=10, pasta="./checkpoints_curriculo",
 )
 
@@ -89,17 +90,78 @@ CURRICULO = [
                           "na_sala": 0.5},
                 "seeker": {"jogo": 1.0, "dentro_sala": 0.2, "rampa_parede": 0.5, "altura": 1.0}},
          min_iters=0, max_iters=None, meta=None),
+
+    # ---------------------------------------------------------------------------------------
+    # Segunda rodada. As fases abaixo nao avancam sozinhas: cada uma e rodada com --fase N e
+    # --iters. Mudancas em relacao a primeira rodada: a porta so conta quando a caixa veda o vao
+    # de verdade (vedar_porta), e os episodios de jogo tem 240 passos do simulador.
+    # ---------------------------------------------------------------------------------------
+    dict(nome="6_vedar", treinar=("hider",), prep_fraction=1.0, horizonte=120, ent_coef=0.003,
+         acoes={"hider": TUDO, "seeker": ("mover",)},
+         pesos={"hider": {"ir_caixa": 1.0, "encarar": 0.3, "alvo_porta": 3.0, "vedar_porta": 5.0,
+                          "trancar_longe": 4.0, "portas_vedadas": 0.3, "na_sala": 2.0}},
+         min_iters=0, max_iters=None, meta=None),
+
+    dict(nome="7_esconder", treinar=("hider",), prep_fraction=0.5, ent_coef=0.003,
+         acoes={"hider": TUDO, "seeker": ("mover", "agarrar")},
+         pesos={"hider": {"jogo": 1.0, "ir_caixa": 1.0, "encarar": 0.3, "alvo_porta": 3.0, "vedar_porta": 5.0,
+                          "trancar_longe": 4.0, "portas_vedadas": 0.3, "na_sala": 2.0}},
+         min_iters=0, max_iters=None, meta=None),
+
+    # Os pegadores enfrentam escondedores que vedam a sala na maior parte dos episodios, entao a
+    # rampa e o principal caminho. (Comecar com a sala ja vedada nao ajuda aqui: os escondedores
+    # mexem nas caixas colocadas e acabam abrindo a sala.)
+    dict(nome="8_invadir", treinar=("seeker",), prep_fraction=0.5, ent_coef=0.01,
+         acoes={"hider": TUDO, "seeker": ("mover", "agarrar")},
+         pesos={"seeker": {"jogo": 1.0, "ir_rampa": 0.5, "lado_baixo": 0.5, "rampa_parede": 1.5,
+                           "rampa_mira": 1.0, "altura": 2.0, "dentro_sala": 0.5}},
+         min_iters=0, max_iters=None, meta=None),
+
+    dict(nome="9_jogo", treinar=("hider", "seeker"), prep_fraction=0.5, ent_coef=0.01,
+         acoes={"hider": TUDO, "seeker": ("mover", "agarrar")},
+         pesos={"hider": {"jogo": 1.0, "alvo_porta": 1.0, "vedar_porta": 2.0, "trancar_longe": 0.5,
+                          "portas_vedadas": 0.2, "na_sala": 0.5},
+                "seeker": {"jogo": 1.0, "dentro_sala": 0.2, "rampa_parede": 0.5, "altura": 1.0}},
+         min_iters=0, max_iters=None, meta=None),
+
+    # Oficina de defesa contra a rampa: alem de vedar a sala, um escondedor precisa sair, trancar a
+    # rampa longe da parede e voltar antes de a ultima porta ser fechada. Com defesa_rampa a
+    # recompensa de vedar so vale com os dois dentro (para ninguem trancar o colega do lado de fora)
+    # e so depois de a rampa estar travada.
+    dict(nome="10_defender", treinar=("hider",), prep_fraction=1.0, horizonte=160, defesa_rampa=True, ent_coef=0.003,
+         acoes={"hider": TUDO, "seeker": ("mover",)},
+         pesos={"hider": {"ir_caixa": 1.0, "encarar": 0.3, "alvo_porta": 3.0, "vedar_porta": 5.0,
+                          "trancar_longe": 4.0, "portas_vedadas": 0.3, "na_sala": 2.0,
+                          "ir_rampa_h": 1.5, "rampa_travada": 5.0, "voltar": 1.5, "colega_fora": 5.0}},
+         min_iters=0, max_iters=None, meta=None),
+
+    dict(nome="11_esconder_defender", treinar=("hider",), prep_fraction=0.5, defesa_rampa=True, ent_coef=0.003,
+         acoes={"hider": TUDO, "seeker": ("mover", "agarrar")},
+         pesos={"hider": {"jogo": 1.0, "ir_caixa": 1.0, "encarar": 0.3, "alvo_porta": 3.0, "vedar_porta": 5.0,
+                          "trancar_longe": 4.0, "portas_vedadas": 0.3, "na_sala": 2.0,
+                          "ir_rampa_h": 1.5, "rampa_travada": 5.0, "voltar": 1.5, "colega_fora": 5.0}},
+         min_iters=0, max_iters=None, meta=None),
 ]
 NOMES_FASES = [f["nome"] for f in CURRICULO]
 
 COMPONENTES = ("jogo", "novidade", "distancia", "ir_caixa", "caixa_porta", "trancar_porta",
                "ir_rampa", "rampa_parede", "dentro_sala", "encarar", "trancar_longe", "portas_fechadas",
-               "na_sala", "lado_baixo", "rampa_mira", "altura")
+               "na_sala", "lado_baixo", "rampa_mira", "altura", "alvo_porta", "vedar_porta", "portas_vedadas",
+               "ir_rampa_h", "rampa_travada", "voltar", "colega_fora")
 GRUPO_DA_ACAO = {"action_movement": "mover", "action_pull": "agarrar", "action_glueall": "trancar"}
 TIMES = ("hider", "seeker")
 HIDDEN = 256
 TAM_CELULA = 0.5
 RAIO_PORTA = 0.45
+# Porta vedada: a caixa trancada precisa estar centrada no vao (0,7 m) a ponto de nao sobrar
+# passagem para um agente (0,3 m de diametro). RAIO_PORTA sozinho aceita caixas deslocadas.
+# Limites medidos no jogo: com a caixa a mais de 0,28 m da linha da parede ou mais de 0,13 m fora do
+# centro, os pegadores passam pela sobra em boa parte dos episodios (sobretudo com a caixa girada).
+LATERAL_VEDA = 0.13
+FUNDO_VEDA = 0.28
+RECUO_ALVO = 0.10   # onde o centro da caixa deve ficar, medido da linha da parede para dentro:
+                    # meio encaixada no vao, onde os batentes a mantem centrada
+RAMPA_LONGE = 0.9   # rampa trancada a mais que isso da parede da sala nao serve aos pegadores
 MAX_PORTAS = 2
 # Para que lado fica o interior da sala em cada parede interna (mesma ordem de paredes_sala).
 NORMAL_PARA_DENTRO = (np.array([1.0, 0.0]), np.array([0.0, -1.0]))
@@ -161,11 +223,32 @@ def _dist_segmento(p, a, b):
 
 class TwoTeamHideAndSeek:
     def __init__(self, n_hiders=2, n_seekers=2, n_boxes=2, n_ramps=1, frame_skip=4, horizon=120, prep_fraction=0.4,
-                 sala_fechada=False):
+                 sala_fechada=False, obs_portas=False, defesa_rampa=False, obs_rampa=False, tam_caixa=0.5, tam_porta=2):
+        # tam_caixa: lado da caixa (m). tam_porta: largura da porta em celulas da grade; o vao livre
+        # mede 0,2 * tam_porta + 0,3 m. No padrao do ambiente a caixa (0,5 m) e menor que o vao (0,7 m):
+        # ela entra nele e sobram frestas. Com tam_porta=1 o vao tem a largura da caixa, que entao
+        # nao entra: encosta na parede e tapa a porta inteira.
+        self.tam_caixa, self.tam_porta = float(tam_caixa), int(tam_porta)
+        self.vao = 0.2 * self.tam_porta + 0.3
+        if self.tam_caixa < self.vao - 0.1:
+            self.recuo_alvo, self.lateral_veda = RECUO_ALVO, LATERAL_VEDA
+            self.fundo_min, self.fundo_max = 0.0, FUNDO_VEDA
+        else:
+            self.recuo_alvo = 0.05 + self.tam_caixa / 2                       # encostada na face da parede
+            self.lateral_veda = max((self.tam_caixa - self.vao) / 2, 0.0) + 0.08  # fresta de no maximo 8 cm
+            self.fundo_min, self.fundo_max = self.recuo_alvo - 0.06, self.recuo_alvo + 0.10
+        # obs_rampa: todos os agentes sabem sempre onde a rampa esta e se ela foi trancada. No ambiente
+        # original a rampa so aparece para quem a enxerga; de dentro da sala os escondedores nao a veem.
+        self.obs_rampa = bool(obs_rampa)
+        self.defesa_rampa = bool(defesa_rampa)
+        # obs_portas: acrescenta a observacao a posicao do agente e das caixas medida a partir de
+        # cada porta (ver _obs_portas). Sem isso a rede so recebe coordenadas absolutas.
+        self.obs_portas = bool(obs_portas)
         self.n_hiders, self.n_seekers = n_hiders, n_seekers
         self.n_agents = n_hiders + n_seekers
         self.n_boxes, self.n_ramps = n_boxes, n_ramps
         self.frame_skip, self.horizon = frame_skip, horizon
+        self.horizon_padrao = horizon
         self.renderizar, self.pausa_render = False, 0.0
         self.ao_quadro = None  # funcao chamada a cada passo do simulador (usada para gravar video)
         n = self.n_agents
@@ -185,25 +268,34 @@ class TwoTeamHideAndSeek:
         self.n_dims = len(self.nvec)
         self.obs_dim = self.reset().shape[1]
 
-    def configurar(self, prep_fraction, sala_fechada=False):
+    def configurar(self, prep_fraction, sala_fechada=False, horizonte=None, defesa_rampa=None):
+        if defesa_rampa is not None:
+            self.defesa_rampa = bool(defesa_rampa)
         # sala_fechada: o episodio ja comeca com uma caixa trancada em cada porta (oficina da rampa).
-        self.sala_fechada = bool(sala_fechada)
-        if self._env is not None and prep_fraction == self.prep_fraction:
+        # Um numero entre 0 e 1 sorteia isso a cada episodio com essa probabilidade.
+        self.sala_fechada = float(sala_fechada)
+        horizonte = int(horizonte or self.horizon_padrao)
+        if self._env is not None and prep_fraction == self.prep_fraction and horizonte == self.horizon:
             return
         self.close()
+        self.horizon = horizonte
         self._env = make_env(n_hiders=self.n_hiders, n_seekers=self.n_seekers, n_boxes=self.n_boxes,
-                             n_ramps=self.n_ramps, horizon=self.horizon, prep_fraction=prep_fraction)
+                             n_ramps=self.n_ramps, horizon=self.horizon, prep_fraction=prep_fraction,
+                             box_size=self.tam_caixa, door_size=self.tam_porta)
         self.prep_fraction = prep_fraction
-        self._lock_caixa = None
+        self._lock_caixa, self._lock_rampa = None, None
         w = self._env
         while w is not None:
-            if type(w).__name__ == "LockObjWrapper" and getattr(w, "ac_obs_prefix", None) == "":
-                self._lock_caixa = w
+            if type(w).__name__ == "LockObjWrapper":
+                if getattr(w, "ac_obs_prefix", None) == "":
+                    self._lock_caixa = w
+                elif "ramp" in str(getattr(w, "ac_obs_prefix", "")):
+                    self._lock_rampa = w
             w = getattr(w, "env", None)
 
     def reset(self):
         obs = self._sortear_mundo()
-        if self.sala_fechada:
+        if self.sala_fechada > 0 and np.random.rand() < self.sala_fechada:
             for _ in range(50):
                 if self._fechar_sala():
                     break
@@ -215,7 +307,7 @@ class TwoTeamHideAndSeek:
         self.visitadas = [{self._celula(p)} for p in self.p_ag]
         self.pot = self._potenciais()
         self.ep = dict(passos_pos=0, visto=0.0, dentro=0.0, portas=None, abrigo=None, jogo_h=0.0, jogo_s=0.0,
-                       subiu=0.0, invasao=0.0)
+                       subiu=0.0, invasao=0.0, vedadas=None, selada=None, rampa_travada=None)
         return self._obs_agentes(obs)
 
     def _sortear_mundo(self):
@@ -232,11 +324,17 @@ class TwoTeamHideAndSeek:
         paredes = next((md for md in u.modules if type(md).__name__ == "WallScenarios"), None)
         portas = getattr(paredes, "door_obs", None)
         self.portas = np.zeros((0, 2)) if portas is None else np.asarray(portas, dtype=np.float64)[:MAX_PORTAS, :2]
+        self.tam_chao = float(u.floor_size)
         cel = u.floor_size / u.grid_size
         q = u.metadata.get("quadrant_size", u.grid_size // 2)
         self.sala_x, self.sala_y = (u.grid_size - q + 0.5) * cel, (q + 0.5) * cel
         self.paredes_sala = [(np.array([self.sala_x, 0.0]), np.array([self.sala_x, self.sala_y])),
                              (np.array([self.sala_x, self.sala_y]), np.array([u.floor_size, self.sala_y]))]
+        # Para cada porta: direcao para dentro da sala, direcao ao longo da parede e ponto-alvo da caixa.
+        self.normal_porta = np.array([NORMAL_PARA_DENTRO[0] if abs(pt[0] - self.sala_x) < 1e-6
+                                      else NORMAL_PARA_DENTRO[1] for pt in self.portas]).reshape(-1, 2)
+        self.tang_porta = np.stack([-self.normal_porta[:, 1], self.normal_porta[:, 0]], -1)
+        self.alvo_porta = self.portas + self.recuo_alvo * self.normal_porta
 
         # Rampa: guarda, no referencial dela, a direcao em que a superficie sobe.
         self._geom_rp, self._sobe_local = None, None
@@ -260,9 +358,8 @@ class TwoTeamHideAndSeek:
         sim, m, lk = self._sim, self._sim.model, self._lock_caixa
         if lk is None or len(self.portas) != len(self._id_cx):
             return False
-        alvos = np.array([pt + 0.31 * (np.array([1.0, 0.0]) if abs(pt[0] - self.sala_x) < 1e-6
-                                       else np.array([0.0, -1.0])) for pt in self.portas])
-        if len(alvos) > 1 and np.linalg.norm(alvos[0] - alvos[1]) < 0.6:
+        alvos = self.alvo_porta.copy()
+        if len(alvos) > 1 and np.linalg.norm(alvos[0] - alvos[1]) < self.tam_caixa + 0.1:
             return False                                    # portas coladas: as caixas se sobreporiam
         ph = self.p_ag[:self.n_hiders]
         if np.linalg.norm(ph[:, None] - alvos[None], axis=-1).min() < 0.75:
@@ -327,14 +424,88 @@ class TwoTeamHideAndSeek:
         portas[:k, :2] = self.portas / 3.0
         portas[:k, 2] = 1.0
         partes.append(np.repeat(portas.reshape(1, -1), n, 0))
+        if self.obs_portas:
+            partes.append(self._obs_portas(obs))
+        if self.obs_rampa:
+            partes.append(self._obs_rampa())
         x = np.concatenate([np.asarray(p, np.float32).reshape(n, -1) for p in partes], -1)
         return np.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+
+    def _obs_portas(self, obs):
+        """Para cada porta, no referencial dela (ao longo da parede, para dentro da sala): onde
+        esta o agente, onde esta cada caixa em relacao ao ponto em que ela veda o vao, se a caixa
+        ja esta no vao e se a porta esta vedada. O que depende de caixa so aparece para quem a ve."""
+        n, nb = self.n_agents, self.n_boxes
+        por_porta = 2 + 3 * nb + 1
+        out = np.zeros((n, MAX_PORTAS, por_porta), np.float32)
+        k = len(self.portas)
+        if k == 0:
+            return out.reshape(n, -1)
+        vis = np.ones((n, nb), np.float32)
+        if "mask_ab_obs" in obs:
+            vis = np.asarray(obs["mask_ab_obs"], np.float32).reshape(n, nb)
+        rel_ag = self.p_ag[:, None] - self.alvo_porta[None]                      # (agentes, portas, 2)
+        out[:, :k, 0] = np.einsum("apd,pd->ap", rel_ag, self.tang_porta) / 3.0
+        out[:, :k, 1] = np.einsum("apd,pd->ap", rel_ag, self.normal_porta) / 3.0
+        if nb:
+            rel = self.p_cx[None] - self.portas[:, None]                         # (portas, caixas, 2)
+            lat = np.einsum("pcd,pd->pc", rel, self.tang_porta)
+            fundo = np.einsum("pcd,pd->pc", rel, self.normal_porta)
+            no_vao = self._no_vao(np.abs(lat), fundo)
+            veda = no_vao & self.cx_trancada_h[None]
+            for j in range(nb):
+                out[:, :k, 2 + 3 * j] = np.clip(2.0 * lat[None, :, j], -3, 3) * vis[:, j:j + 1]
+                out[:, :k, 3 + 3 * j] = np.clip(2.0 * (fundo[None, :, j] - self.recuo_alvo), -3, 3) * vis[:, j:j + 1]
+                out[:, :k, 4 + 3 * j] = no_vao[None, :, j] * vis[:, j:j + 1]
+            out[:, :k, -1] = (veda[None] * vis[:, None, :]).max(-1)
+        return out.reshape(n, -1)
+
+    def _obs_rampa(self):
+        """Onde esta a rampa em relacao ao agente, a que distancia ela esta da parede da sala, se
+        esta dentro da sala e se os escondedores ja a trancaram (e se assim ela ficou fora de uso)."""
+        out = np.zeros((self.n_agents, 6), np.float32)
+        if len(self.p_rp):
+            c = self.p_rp[0]
+            out[:, :2] = (c[None] - self.p_ag) / 3.0
+            d_par = min(_dist_segmento(c, a, b) for a, b in self.paredes_sala)
+            dentro = self._dentro_sala(c)
+            trancada = bool(self.rp_trancada_h[0])
+            out[:, 2] = min(d_par, 3.0) / 3.0
+            out[:, 3] = float(dentro)
+            out[:, 4] = float(trancada)
+            out[:, 5] = float(trancada and (dentro or d_par > RAMPA_LONGE))
+        return out
 
     def _celula(self, p):
         return int(p[0] // TAM_CELULA), int(p[1] // TAM_CELULA)
 
     def _dentro_sala(self, p):
         return p[0] > self.sala_x + 0.05 and p[1] < self.sala_y - 0.05
+
+    def _no_vao(self, lateral, fundo):
+        """A caixa (dados o desvio lateral e a distancia a linha da parede) esta onde veda a porta:
+        centrada e dentro do vao ou encostada na parede, por dentro ou por fora."""
+        f = np.abs(fundo)
+        return (lateral <= self.lateral_veda) & (f >= self.fundo_min) & (f <= self.fundo_max)
+
+    def _portas_livres(self):
+        """Portas sem caixa na frente (da para passar)."""
+        livres = np.ones(len(self.portas), bool)
+        if len(self.p_cx) and len(self.portas):
+            livres = np.linalg.norm(self.portas[:, None] - self.p_cx[None], axis=-1).min(1) > self.tam_caixa / 2 + 0.25
+        return livres
+
+    def _dist_caminho(self, p, q):
+        """Distancia entre dois pontos andando: se um esta dentro da sala e o outro fora, o caminho
+        passa pela melhor porta que nao tenha caixa na frente."""
+        reta = float(np.linalg.norm(p - q))
+        if self._dentro_sala(p) == self._dentro_sala(q) or not len(self.portas):
+            return reta
+        livres = self._portas_livres()
+        if not livres.any():
+            return reta + 6.0
+        via = np.linalg.norm(self.portas - p[None], axis=1) + np.linalg.norm(self.portas - q[None], axis=1)
+        return float(via[livres].min())
 
     def _ler_estado(self):
         xp = self._sim.data.body_xpos
@@ -354,12 +525,17 @@ class TwoTeamHideAndSeek:
         self.cx_trancada_h = np.zeros(len(self.p_cx), bool)
         if lk is not None and len(self.p_cx) and len(np.atleast_1d(lk.obj_locked)) == len(self.p_cx):
             self.cx_trancada_h = np.asarray(lk.obj_locked, bool) & (np.asarray(lk.which_locked) < self.n_hiders)
+        lr = self._lock_rampa
+        self.rp_trancada_h = np.zeros(len(self.p_rp), bool)
+        if lr is not None and len(self.p_rp) and len(np.atleast_1d(lr.obj_locked)) == len(self.p_rp):
+            self.rp_trancada_h = np.asarray(lr.obj_locked, bool) & (np.asarray(lr.which_locked) < self.n_hiders)
 
     def _potenciais(self):
         H, S = slice(0, self.n_hiders), slice(self.n_hiders, self.n_agents)
         pot = {k: np.zeros(self.n_agents) for k in
                ("distancia", "caixa_porta", "trancar_porta", "trancar_longe", "ir_rampa", "rampa_parede",
-                "na_sala", "lado_baixo", "rampa_mira", "altura")}
+                "na_sala", "lado_baixo", "rampa_mira", "altura", "alvo_porta", "vedar_porta", "ir_rampa_h",
+                "rampa_travada", "voltar", "colega_fora")}
         ph, ps = self.p_ag[H], self.p_ag[S]
         d_hs = np.linalg.norm(ph[:, None] - ps[None], axis=-1)
         pot["distancia"][H] = d_hs.min(1)
@@ -367,7 +543,7 @@ class TwoTeamHideAndSeek:
         # Escondedor fora da sala nao esta protegido por barricada nenhuma.
         na_sala = np.array([float(self._dentro_sala(p)) for p in ph])
         pot["na_sala"][H] = na_sala
-        n_portas = 0.0
+        n_portas, n_vedadas = 0.0, 0.0
         livres = np.ones(len(self.p_cx), bool)
         if len(self.p_cx) and len(self.portas):
             d_pc = np.linalg.norm(self.portas[:, None] - self.p_cx[None], axis=-1)
@@ -376,11 +552,20 @@ class TwoTeamHideAndSeek:
             # Porta fechada so conta para quem esta do lado de dentro: fechar a sala por fora
             # (arrastando a caixa atras de si pela porta) deixa o escondedor exposto.
             pot["trancar_porta"][H] = n_portas * na_sala
-            # Caixa trancada longe de qualquer porta nao serve de barricada e nao pode mais ser movida.
-            longe = self.cx_trancada_h & ~np.any(d_pc < RAIO_PORTA, axis=0)
-            pot["trancar_longe"][:] = -float(longe.sum())
             pot["caixa_porta"][:] = -_custo_atribuicao(d_pc)
-            livres = ~np.any(cobre, axis=0)
+            # Criterio estrito: caixa trancada e centrada no vao, sem sobrar passagem.
+            rel = self.p_cx[None] - self.portas[:, None]                      # (portas, caixas, 2)
+            fundo = np.einsum("pcd,pd->pc", rel, self.normal_porta)
+            lateral = np.abs(np.einsum("pcd,pd->pc", rel, self.tang_porta))
+            no_vao = self._no_vao(lateral, fundo)
+            veda = no_vao & self.cx_trancada_h[None]
+            n_vedadas = float(np.any(veda, axis=1).sum())
+            pot["vedar_porta"][H] = n_vedadas * (float(na_sala.min()) if self.defesa_rampa else na_sala)
+            pot["alvo_porta"][:] = -_custo_atribuicao(np.linalg.norm(self.alvo_porta[:, None] - self.p_cx[None], axis=-1))
+            # Caixa trancada fora do vao nao serve de barricada e nao pode mais ser movida.
+            longe = self.cx_trancada_h & ~np.any(no_vao, axis=0)
+            pot["trancar_longe"][:] = -float(longe.sum())
+            livres = ~np.any(veda, axis=0)
         idx_livres = np.flatnonzero(livres)
         alvo = np.full(self.n_hiders, -1)
         if len(idx_livres):
@@ -400,9 +585,49 @@ class TwoTeamHideAndSeek:
         # para nao ser punido por descer do outro lado.
         pot["altura"][S] = [0.5 if self._dentro_sala(pt) else float(np.clip(z - 0.15, 0.0, 0.5))
                             for pt, z in zip(ps, self.z_ag[S])]
+        # Defesa contra a rampa: trancada por um escondedor longe da parede da sala (ou dentro
+        # da sala) ela nao pode mais ser usada, porque so quem trancou destranca.
+        travada = 0.0
+        if len(self.p_rp):
+            c = self.p_rp[0]
+            d_par = min(_dist_segmento(c, a, b) for a, b in self.paredes_sala)
+            fora_de_uso = self._dentro_sala(c) or d_par > RAMPA_LONGE
+            travada = float(bool(self.rp_trancada_h[0]) and fora_de_uso)
+            pot["rampa_travada"][H] = travada
+            # Enquanto a rampa nao estiver travada, o escondedor mais proximo dela e puxado para la.
+            # Distancia pelo caminho: de dentro da sala ate a rampa do lado de fora e preciso passar
+            # por uma porta livre (em linha reta o escondedor ficaria empurrando a parede).
+            d_hr = np.array([self._dist_caminho(p, c) for p in ph])
+            if not travada and len(d_hr):
+                quem = int(d_hr.argmin())
+                pot["ir_rampa_h"][quem] = -float(d_hr.min())
+                if self.defesa_rampa and len(idx_livres):
+                    # Quem vai cuidar da rampa nao e puxado para caixa nenhuma; o outro fica com a mais proxima.
+                    alvo = np.full(self.n_hiders, -1)
+                    outros = [i for i in range(self.n_hiders) if i != quem]
+                    if outros:
+                        sub = np.linalg.norm(ph[outros][:, None] - self.p_cx[idx_livres][None], axis=-1)
+                        alvo[outros] = idx_livres[_atribuir(sub)]
+        # Depois de travar a rampa, quem ficou do lado de fora e puxado de volta para a porta livre
+        # mais proxima; e fechar a ultima porta livre com um colega do lado de fora custa caro.
+        if len(self.portas):
+            livres_p = self._portas_livres()
+            fora = na_sala < 0.5
+            if travada and livres_p.any():
+                for i in np.flatnonzero(fora):
+                    pot["voltar"][i] = -float(np.linalg.norm(self.portas[livres_p] - ph[i][None], axis=1).min()) - 0.3
+            pot["colega_fora"][H] = -float(fora.any() and not livres_p.any())
+        if self.defesa_rampa:
+            # Primeiro a rampa, depois a sala: enquanto a rampa nao estiver travada, vedar portas e
+            # ficar na sala nao rendem nada (senao os escondedores se fecham e nunca saem para trava-la).
+            pot["vedar_porta"][H] *= travada
+            pot["na_sala"][H] *= travada
         pot["_alvo"] = alvo
         pot["_n_portas"] = n_portas
         pot["_abrigo"] = n_portas * float(na_sala.min()) if len(na_sala) else 0.0
+        pot["_n_vedadas"] = n_vedadas
+        pot["_selada"] = float(n_vedadas >= MAX_PORTAS and len(na_sala) and na_sala.min() > 0)
+        pot["_travada"] = travada
         pot["_p_ag"], pot["_p_cx"] = self.p_ag.copy(), self.p_cx.copy()
         pot["_frente"], pot["_p_rp"] = self.frente.copy(), self.p_rp.copy()
         return pot
@@ -471,10 +696,21 @@ class TwoTeamHideAndSeek:
         # Unica auxiliar que nao e diferenca de potencial: paga a cada passo pelas portas ja
         # fechadas, para premiar quem fecha cedo (o jogo so da metade do episodio para isso).
         c["portas_fechadas"][H] = pot["trancar_porta"][H] / MAX_PORTAS
+        c["vedar_porta"][H] = dp["vedar_porta"][H]
+        c["portas_vedadas"][H] = pot["vedar_porta"][H] / MAX_PORTAS
+        c["rampa_travada"][H] = dp["rampa_travada"][H]
         if em_prep:
             c["ir_caixa"][H] = dp["ir_caixa"][H]
             c["caixa_porta"][H] = dp["caixa_porta"][H]
+            c["alvo_porta"][H] = dp["alvo_porta"][H]
             c["encarar"][H] = dp["encarar"][H]
+            # A troca de "quem e o mais proximo da rampa" ou o instante em que ela e travada nao
+            # sao deslocamento de ninguem: nesses passos a parcela fica em zero.
+            mesmo = (ant["ir_rampa_h"][H] != 0) & (pot["ir_rampa_h"][H] != 0)
+            c["ir_rampa_h"][H] = np.where(mesmo, dp["ir_rampa_h"][H], 0.0)
+            mesmo = (ant["voltar"][H] != 0) & (pot["voltar"][H] != 0)
+            c["voltar"][H] = np.where(mesmo, dp["voltar"][H], 0.0)
+            c["colega_fora"][H] = dp["colega_fora"][H]
         else:
             c["encarar"][S] = dp["encarar"][S]
             c["novidade"][S] = novas[S]
@@ -492,10 +728,12 @@ class TwoTeamHideAndSeek:
             self.ep["dentro"] += float(c["dentro_sala"][S].max() > 0)
             # Pegador no alto da rampa, e pegador dentro da sala com as duas portas fechadas.
             self.ep["subiu"] = max(self.ep["subiu"], float(self.z_ag[S].max() >= 0.5))
-            if pot["_n_portas"] >= MAX_PORTAS and c["dentro_sala"][S].max() > 0:
+            if pot["_n_vedadas"] >= MAX_PORTAS and c["dentro_sala"][S].max() > 0:
                 self.ep["invasao"] = 1.0
             if self.ep["portas"] is None:
                 self.ep["portas"], self.ep["abrigo"] = float(pot["_n_portas"]), float(pot["_abrigo"])
+                self.ep["vedadas"], self.ep["selada"] = float(pot["_n_vedadas"]), float(pot["_selada"])
+                self.ep["rampa_travada"] = float(pot["_travada"])
         self.ep["jogo_h"] += float(jogo[H].mean())
         self.ep["jogo_s"] += float(jogo[S].mean())
 
@@ -509,13 +747,29 @@ class TwoTeamHideAndSeek:
                            portas=self.ep["portas"] if self.ep["portas"] is not None else float(pot["_n_portas"]),
                            abrigo=self.ep["abrigo"] if self.ep["abrigo"] is not None else float(pot["_abrigo"]),
                            jogo_h=self.ep["jogo_h"], jogo_s=self.ep["jogo_s"],
-                           subiu=self.ep["subiu"], invasao=self.ep["invasao"])
+                           subiu=self.ep["subiu"], invasao=self.ep["invasao"],
+                           vedadas=self.ep["vedadas"] if self.ep["vedadas"] is not None else float(pot["_n_vedadas"]),
+                           selada=self.ep["selada"] if self.ep["selada"] is not None else float(pot["_selada"]),
+                           rampa_travada=(self.ep["rampa_travada"] if self.ep["rampa_travada"] is not None
+                                          else float(pot["_travada"])))
         return self._obs_agentes(obs), comp, fim, info_ep
 
 
-def worker_process(remote, parent_remote, cfg_amb, prep_fraction, sala_fechada=False):
+def ambiente_da_fase(cfg_amb, fase):
+    """Cria o ambiente com as regras de uma fase do curriculo (inclusive a duracao do episodio)."""
+    cfg = dict(cfg_amb)
+    if fase.get("horizonte"):
+        cfg["horizon"] = fase["horizonte"]
+    return TwoTeamHideAndSeek(**cfg, prep_fraction=fase["prep_fraction"], sala_fechada=fase.get("sala_fechada", False),
+                              defesa_rampa=fase.get("defesa_rampa", False))
+
+
+def worker_process(remote, parent_remote, cfg_amb, prep_fraction, sala_fechada=False, horizonte=None,
+                   defesa_rampa=False):
     parent_remote.close()
+    np.random.seed((os.getpid() * 7919 + int(time.time() * 1000)) % (2 ** 31))
     env = TwoTeamHideAndSeek(**cfg_amb, prep_fraction=prep_fraction, sala_fechada=sala_fechada)
+    env.configurar(prep_fraction, sala_fechada, horizonte, defesa_rampa)
     while True:
         try:
             cmd, data = remote.recv()
@@ -538,12 +792,12 @@ def worker_process(remote, parent_remote, cfg_amb, prep_fraction, sala_fechada=F
 
 
 class ParallelEnvs:
-    def __init__(self, num_envs, cfg_amb, prep_fraction, sala_fechada=False):
+    def __init__(self, num_envs, cfg_amb, prep_fraction, sala_fechada=False, horizonte=None, defesa_rampa=False):
         self.num_envs = num_envs
         self.remotes, self.work_remotes = zip(*[mp.Pipe() for _ in range(num_envs)])
         self.ps = []
         for wr, r in zip(self.work_remotes, self.remotes):
-            p = mp.Process(target=worker_process, args=(wr, r, cfg_amb, prep_fraction, sala_fechada))
+            p = mp.Process(target=worker_process, args=(wr, r, cfg_amb, prep_fraction, sala_fechada, horizonte, defesa_rampa))
             p.daemon = True
             p.start()
             self.ps.append(p)
@@ -555,9 +809,9 @@ class ParallelEnvs:
             remote.send(("reset", None))
         return np.stack([remote.recv() for remote in self.remotes])
 
-    def configurar(self, prep_fraction, sala_fechada=False):
+    def configurar(self, prep_fraction, sala_fechada=False, horizonte=None, defesa_rampa=False):
         for remote in self.remotes:
-            remote.send(("config", (prep_fraction, sala_fechada)))
+            remote.send(("config", (prep_fraction, sala_fechada, horizonte, defesa_rampa)))
         return np.stack([remote.recv() for remote in self.remotes])
 
     def step(self, acoes):

@@ -20,7 +20,7 @@ import preparar_ambiente  # noqa: F401
 import mujoco
 
 from avaliar import MODELO_DEMO, carregar_agentes, indice_fase, jogar_episodio
-from treinamento import CURRICULO, TIMES, TwoTeamHideAndSeek, mascara_acoes
+from treinamento import CURRICULO, TIMES, ambiente_da_fase, mascara_acoes
 
 
 def _fonte(tamanho):
@@ -92,8 +92,10 @@ class Filmadora:
         d.text((14, 9), titulo, fill=cor, font=self.fonte)
         d.text((self.largura - 120, 13), f"passo {passo:3d}/{total}", fill=(220, 220, 220), font=self.fonte_p)
         d.rectangle([0, self.altura - 30, self.largura, self.altura], fill=(20, 20, 24))
-        d.text((14, self.altura - 25), "verde = escondedores    vermelho = pegadores    "
-               f"portas bloqueadas: {int(env.pot['_n_portas'])}", fill=(220, 220, 220), font=self.fonte_p)
+        rodape = f"verde = escondedores   vermelho = pegadores   portas vedadas: {int(env.pot['_n_vedadas'])}"
+        if env.pot["_travada"]:
+            rodape += "   rampa travada"
+        d.text((14, self.altura - 25), rodape, fill=(220, 220, 220), font=self.fonte_p)
         self.quadros.append(np.asarray(img))
 
     def fechar(self):
@@ -120,9 +122,11 @@ def main():
     ap.add_argument("--melhores", type=int, default=None,
                     help="guarda so os N episodios em que os escondedores ficaram menos tempo a vista")
     ap.add_argument("--de", type=int, default=20, help="quantos episodios jogar ao usar --melhores")
-    ap.add_argument("--destaque", choices=("escondedores", "rampa"), default="escondedores",
-                    help="criterio do --melhores: escondedores menos vistos, ou pegadores usando a rampa")
+    ap.add_argument("--destaque", choices=("escondedores", "rampa", "defesa"), default="escondedores",
+                    help="criterio do --melhores: escondedores menos vistos, pegadores usando a rampa, ou "
+                         "escondedores que travam a rampa e vedam a sala")
     ap.add_argument("--fase", type=int, default=None, help="usa as regras desta fase do curriculo")
+    ap.add_argument("--horizonte", type=int, default=None, help="passos do simulador por episodio")
     ap.add_argument("--det", action="store_true", help="acao mais provavel em vez de amostrar")
     ap.add_argument("--semente", type=int, default=0)
     ap.add_argument("--gif", action="store_true", help="grava GIF em vez de MP4")
@@ -135,8 +139,9 @@ def main():
     fase = CURRICULO[indice_fase(estado, args.fase)]
     np.random.seed(args.semente)
     torch.manual_seed(args.semente)
-    env = TwoTeamHideAndSeek(**cfg_amb, prep_fraction=fase["prep_fraction"],
-                             sala_fechada=fase.get("sala_fechada", False))
+    if args.horizonte:
+        cfg_amb, fase = dict(cfg_amb, horizon=args.horizonte), dict(fase, horizonte=None)
+    env = ambiente_da_fase(cfg_amb, fase)
     mascaras = {t: mascara_acoes(env.nvec, env.grupos, env.neutro, fase["acoes"][t]).to(device) for t in TIMES}
     os.makedirs(args.saida, exist_ok=True)
     prefixo = args.nome or os.path.splitext(os.path.basename(args.ckpt))[0]
@@ -154,9 +159,12 @@ def main():
                 if args.destaque == "rampa":
                     def chave(g):
                         return (-g[0]["subiu"], -g[0]["invasao"], -g[0]["dentro"])
+                elif args.destaque == "defesa":
+                    def chave(g):
+                        return (-g[0]["rampa_travada"], -g[0]["selada"], g[0]["visto"])
                 else:
                     def chave(g):
-                        return (g[0]["visto"], -g[0]["portas"])
+                        return (-g[0]["selada"], g[0]["visto"])
                 gravados = sorted(gravados, key=chave)[:args.melhores]
     finally:
         filmadora.fechar()
@@ -165,9 +173,10 @@ def main():
     for i, (info, quadros) in enumerate(gravados, 1):
         caminho = os.path.join(args.saida, f"{prefixo}_ep{i}{ext}")
         salvar(quadros, caminho, args.fps)
-        print(f"{caminho}: portas bloqueadas {info['portas']:.0f}, a vista {100 * info['visto']:.0f}% do tempo, "
-              f"recompensa escondedores {info['jogo_h']:+.1f}, pegador subiu na rampa: "
-              f"{'sim' if info['subiu'] else 'nao'}, pegador dentro da sala {100 * info['dentro']:.0f}% do tempo")
+        print(f"{caminho}: portas vedadas {info['vedadas']:.0f}, sala vedada a tempo: {'sim' if info['selada'] else 'nao'}, "
+              f"rampa travada: {'sim' if info['rampa_travada'] else 'nao'}, a vista {100 * info['visto']:.0f}% do tempo, "
+              f"pegador subiu na rampa: {'sim' if info['subiu'] else 'nao'}, "
+              f"pegador dentro da sala {100 * info['dentro']:.0f}% do tempo")
 
 
 if __name__ == "__main__":
